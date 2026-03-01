@@ -44,7 +44,7 @@ function detectProvider(): LLMProvider {
 export function getProviderInfo(): { provider: LLMProvider; model: string } {
   const provider = detectProvider();
   switch (provider) {
-    case 'minimax': return { provider, model: 'MiniMax-M1' };
+    case 'minimax': return { provider, model: 'MiniMax-M2.5' };
     case 'anthropic': return { provider, model: 'claude-sonnet-4-20250514' };
     default: return { provider: 'mock', model: 'mock-agent' };
   }
@@ -89,7 +89,7 @@ async function runOpenAICompatibleAgent(
 ): Promise<OpenAI.ChatCompletionMessageParam[]> {
   const client = new OpenAI({
     apiKey: process.env.MINIMAX_API_KEY,
-    baseURL: 'https://api.minimax.chat/v1',
+    baseURL: 'https://api.minimaxi.com/v1',
   });
 
   const messages: OpenAI.ChatCompletionMessageParam[] = existingMessages
@@ -113,7 +113,7 @@ async function runOpenAICompatibleAgent(
     let response: OpenAI.ChatCompletion;
     try {
       response = await client.chat.completions.create({
-        model: 'MiniMax-M1',
+        model: 'MiniMax-M2.5',
         max_tokens: 8192,
         messages,
         tools: openaiTools,
