@@ -23,5 +23,4 @@ pnpm --filter frontend dev   # frontend only, port 5173, proxies /api and /ws to
 - Lint/typecheck: `pnpm run lint` (runs `tsc --noEmit` in both packages)
 - The Vite proxy forwards `/api` and `/ws` from port 5173 → 3001; WebSocket target must use `http://` not `ws://` in Vite config
 - Agent workspace defaults to `/tmp/agent-workspace` (configurable via `AGENT_WORKSPACE` env var)
-- `pnpm.onlyBuiltDependencies` in root `package.json` allowlists esbuild for non-interactive install
->>>>>>> cursor/development-environment-setup-30c1
+- `pnpm.onlyBuiltDependencies` in root `package.json` allowlists esbuild and node-pty for non-interactive install
