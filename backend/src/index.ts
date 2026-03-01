@@ -174,7 +174,7 @@ async function executeAgent(
     // VM initialization
     if (!existingMessages && hasDesktopSupport()) {
       emit({ type: 'message', content: '🖥️ Initializing virtual machine...', timestamp: new Date().toISOString() });
-      const desktop = await startTaskDesktop(taskId);
+      const desktop = await startTaskDesktop(taskId, workspace);
       if (desktop) {
         setWorkspaceEnv(workspace, 'DISPLAY', desktop.display);
         emit({ type: 'message', content: `✅ Virtual machine ready — desktop \`${desktop.display}\` on port \`${desktop.vncPort}\``, timestamp: new Date().toISOString() });
