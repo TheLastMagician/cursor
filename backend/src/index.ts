@@ -3,7 +3,8 @@ import cors from 'cors';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { v4 as uuid } from 'uuid';
-import { mkdirSync, existsSync } from 'fs';
+import { mkdirSync, existsSync, readdirSync, statSync, createReadStream } from 'fs';
+import { join, resolve, basename } from 'path';
 import { store } from './store.js';
 import { runAgent, getProviderInfo } from './agent.js';
 import { toolDefinitions } from './tools.js';
@@ -35,6 +36,40 @@ app.delete('/api/tasks/:id', (req, res) => {
 app.get('/api/health', (_req, res) => {
   const info = getProviderInfo();
   res.json({ status: 'ok', provider: info.provider, model: info.model, workspace: DEFAULT_WORKSPACE });
+});
+
+app.get('/api/files', (req, res) => {
+  const workspace = (req.query.workspace as string) || DEFAULT_WORKSPACE;
+  const relPath = (req.query.path as string) || '/';
+  const fullPath = resolve(workspace, relPath.replace(/^\//, ''));
+  if (!fullPath.startsWith(resolve(workspace))) return res.status(403).json({ error: 'Path traversal' });
+  if (!existsSync(fullPath)) return res.status(404).json({ error: 'Not found' });
+  try {
+    const entries = readdirSync(fullPath).filter(n => !n.startsWith('.')).map(name => {
+      const fp = join(fullPath, name);
+      try {
+        const s = statSync(fp);
+        return { name, type: s.isDirectory() ? 'directory' as const : 'file' as const, size: s.size, modified: s.mtime.toISOString() };
+      } catch { return { name, type: 'file' as const, size: 0, modified: '' }; }
+    });
+    entries.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'directory' ? -1 : 1));
+    res.json({ path: relPath, entries });
+  } catch (err) { res.status(500).json({ error: String(err) }); }
+});
+
+app.get('/api/files/download', (req, res) => {
+  const workspace = (req.query.workspace as string) || DEFAULT_WORKSPACE;
+  const relPath = (req.query.path as string) || '';
+  const fullPath = resolve(workspace, relPath.replace(/^\//, ''));
+  if (!fullPath.startsWith(resolve(workspace))) return res.status(403).json({ error: 'Path traversal' });
+  if (!existsSync(fullPath)) return res.status(404).json({ error: 'Not found' });
+  try {
+    const s = statSync(fullPath);
+    if (s.isDirectory()) return res.status(400).json({ error: 'Cannot download directory' });
+    res.setHeader('Content-Disposition', `attachment; filename="${basename(fullPath)}"`);
+    res.setHeader('Content-Length', s.size);
+    createReadStream(fullPath).pipe(res);
+  } catch (err) { res.status(500).json({ error: String(err) }); }
 });
 
 const server = createServer(app);

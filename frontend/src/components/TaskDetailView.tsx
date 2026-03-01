@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { ArrowUp, Image, AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Loader2, Clock, User, Brain, MoreHorizontal, Maximize2, Settings, Lock, GitBranch as GitIcon, Monitor, TerminalSquare } from 'lucide-react';
+import { ArrowUp, Image, AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Loader2, Clock, User, Brain, MoreHorizontal, Maximize2, Minimize2, Settings, Lock, GitBranch as GitIcon, Monitor, TerminalSquare, FolderOpen, Folder, File, Download } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { AgentEvent, Task } from '../types';
@@ -17,7 +17,7 @@ interface Props {
   pendingFollowUps?: string[];
 }
 
-type TabId = 'setup' | 'secrets' | 'git' | 'desktop' | 'terminal';
+type TabId = 'setup' | 'secrets' | 'git' | 'desktop' | 'terminal' | 'files';
 
 const TAB_ICONS: Record<TabId, React.ReactNode> = {
   setup: <Settings size={14} />,
@@ -25,6 +25,7 @@ const TAB_ICONS: Record<TabId, React.ReactNode> = {
   git: <GitIcon size={14} />,
   desktop: <Monitor size={14} />,
   terminal: <TerminalSquare size={14} />,
+  files: <FolderOpen size={14} />,
 };
 
 export default function TaskDetailView({ task, events, isRunning, workedDuration, onFollowUp, onNewTask, pendingFollowUps }: Props) {
@@ -37,7 +38,9 @@ export default function TaskDetailView({ task, events, isRunning, workedDuration
     return saved ? parseInt(saved) : 340;
   });
   const [isDragging, setIsDragging] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const dragRef = useRef({ startX: 0, startWidth: 0 });
+  const bodyRef = useRef<HTMLDivElement>(null);
 
   const handleDragStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -49,7 +52,8 @@ export default function TaskDetailView({ task, events, isRunning, workedDuration
     if (!isDragging) return;
     const handleMove = (e: MouseEvent) => {
       const delta = dragRef.current.startX - e.clientX;
-      const w = Math.max(220, Math.min(700, dragRef.current.startWidth + delta));
+      const maxW = bodyRef.current ? bodyRef.current.clientWidth - 300 : 900;
+      const w = Math.max(220, Math.min(maxW, dragRef.current.startWidth + delta));
       setPanelWidth(w);
     };
     const handleUp = () => {
@@ -90,6 +94,7 @@ export default function TaskDetailView({ task, events, isRunning, workedDuration
     { id: 'setup', label: 'Setup' },
     { id: 'secrets', label: 'Secrets' },
     { id: 'git', label: 'Git' },
+    { id: 'files', label: 'Files' },
     { id: 'desktop', label: 'Desktop' },
     { id: 'terminal', label: 'Terminal' },
   ];
@@ -123,15 +128,17 @@ export default function TaskDetailView({ task, events, isRunning, workedDuration
           ))}
           <div className="ml-1 border-l border-gray-200 pl-1 flex items-center gap-0.5">
             <button className="p-1.5 text-gray-400 hover:text-gray-600 rounded-md hover:bg-gray-100" title="More options"><MoreHorizontal size={14} /></button>
-            <button className="p-1.5 text-gray-400 hover:text-gray-600 rounded-md hover:bg-gray-100" title="Expand"><Maximize2 size={14} /></button>
+            <button onClick={() => setExpanded(!expanded)} className="p-1.5 text-gray-400 hover:text-gray-600 rounded-md hover:bg-gray-100" title={expanded ? 'Collapse' : 'Expand'}>
+              {expanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+            </button>
           </div>
         </div>
       </div>
 
       {/* Body */}
-      <div className="flex-1 flex overflow-hidden">
+      <div ref={bodyRef} className="flex-1 flex overflow-hidden">
         {/* Main */}
-        <div className="flex-1 flex flex-col min-w-0">
+        <div className={`flex flex-col min-w-0 ${expanded ? 'hidden' : 'flex-1'}`}>
           <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-5">
             <div className="max-w-[720px] space-y-4">
               {task && (
@@ -198,13 +205,15 @@ export default function TaskDetailView({ task, events, isRunning, workedDuration
         </div>
 
         {/* Draggable divider */}
-        <div
-          onMouseDown={handleDragStart}
-          className={`w-[3px] flex-shrink-0 cursor-col-resize transition-colors hidden lg:block ${isDragging ? 'bg-blue-400' : 'hover:bg-blue-300 bg-transparent'}`}
-        />
+        {!expanded && (
+          <div
+            onMouseDown={handleDragStart}
+            className={`w-[3px] flex-shrink-0 cursor-col-resize transition-colors hidden lg:block ${isDragging ? 'bg-blue-400' : 'hover:bg-blue-300 bg-transparent'}`}
+          />
+        )}
 
         {/* Right panel */}
-        <div style={{ width: panelWidth }} className="border-l border-gray-200 bg-gray-50/50 overflow-y-auto hidden lg:block flex-shrink-0">
+        <div style={expanded ? undefined : { width: panelWidth }} className={`border-l border-gray-200 bg-gray-50/50 overflow-y-auto hidden lg:flex flex-col flex-shrink-0 ${expanded ? 'flex-1' : ''}`}>
           <RightPanel tab={activeTab} task={task} isRunning={isRunning} events={events} />
         </div>
       </div>
@@ -217,6 +226,7 @@ function RightPanel({ tab, task, isRunning, events }: { tab: TabId; task: Task |
     case 'setup': return <SetupPanel task={task} isRunning={isRunning} events={events} />;
     case 'secrets': return <SecretsPanel />;
     case 'git': return <GitPanel />;
+    case 'files': return <FilesPanel workspace={task?.workspace} />;
     case 'desktop': return <DesktopPanel />;
     case 'terminal': return <TerminalPanel taskId={task?.id || 'default'} />;
     default: return null;
@@ -333,6 +343,98 @@ function GitPanel() {
         <div className="mt-3 space-y-1 text-xs">
           <p className="text-gray-500">Files changed will appear here when the agent modifies code.</p>
         </div>
+      </div>
+    </div>
+  );
+}
+
+interface FileEntry { name: string; type: 'file' | 'directory'; size: number; modified: string; }
+
+function FilesPanel({ workspace }: { workspace?: string }) {
+  const [currentPath, setCurrentPath] = useState('/');
+  const [entries, setEntries] = useState<FileEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const loadDir = useCallback(async (path: string) => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ path });
+      if (workspace) params.set('workspace', workspace);
+      const res = await fetch(`/api/files?${params}`);
+      if (res.ok) {
+        const data = await res.json();
+        setEntries(data.entries || []);
+        setCurrentPath(path);
+      }
+    } catch { /* ignore */ }
+    setLoading(false);
+  }, [workspace]);
+
+  useEffect(() => { loadDir('/'); }, [loadDir]);
+
+  const pathParts = currentPath.split('/').filter(Boolean);
+  const downloadUrl = (filePath: string) => {
+    const params = new URLSearchParams({ path: filePath });
+    if (workspace) params.set('workspace', workspace);
+    return `/api/files/download?${params}`;
+  };
+
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  return (
+    <div className="h-full flex flex-col">
+      <div className="px-3 py-2 border-b border-gray-200 flex items-center gap-1 text-xs flex-wrap">
+        <button onClick={() => loadDir('/')} className="text-blue-600 hover:underline font-medium">/</button>
+        {pathParts.map((part, i) => (
+          <span key={i} className="flex items-center gap-1">
+            <ChevronRight size={10} className="text-gray-400" />
+            <button onClick={() => loadDir('/' + pathParts.slice(0, i + 1).join('/'))} className="text-blue-600 hover:underline">{part}</button>
+          </span>
+        ))}
+      </div>
+      <div className="flex-1 overflow-y-auto">
+        {loading ? (
+          <div className="flex items-center justify-center h-32"><Loader2 size={16} className="animate-spin text-gray-400" /></div>
+        ) : entries.length === 0 ? (
+          <p className="text-xs text-gray-400 text-center py-8">Empty directory</p>
+        ) : (
+          <div className="divide-y divide-gray-100">
+            {currentPath !== '/' && (
+              <button onClick={() => loadDir('/' + pathParts.slice(0, -1).join('/'))} className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-100 text-xs text-gray-500">
+                <Folder size={14} className="text-gray-400" />
+                <span>..</span>
+              </button>
+            )}
+            {entries.map((entry) => {
+              const entryPath = currentPath === '/' ? `/${entry.name}` : `${currentPath}/${entry.name}`;
+              return (
+                <div key={entry.name} className="flex items-center gap-2 px-3 py-2 hover:bg-gray-50 group">
+                  {entry.type === 'directory' ? (
+                    <button onClick={() => loadDir(entryPath)} className="flex items-center gap-2 flex-1 min-w-0 text-left">
+                      <Folder size={14} className="text-blue-400 flex-shrink-0" />
+                      <span className="text-xs text-gray-800 truncate">{entry.name}</span>
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <File size={14} className="text-gray-400 flex-shrink-0" />
+                      <span className="text-xs text-gray-700 truncate">{entry.name}</span>
+                      <span className="text-[10px] text-gray-400 ml-auto flex-shrink-0">{formatSize(entry.size)}</span>
+                    </div>
+                  )}
+                  {entry.type === 'file' && (
+                    <a href={downloadUrl(entryPath)} download className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-gray-600 flex-shrink-0" title="Download">
+                      <Download size={12} />
+                    </a>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
