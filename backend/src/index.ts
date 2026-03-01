@@ -6,6 +6,7 @@ import { v4 as uuid } from 'uuid';
 import { mkdirSync, existsSync } from 'fs';
 import { store } from './store.js';
 import { runAgent, getProviderInfo } from './agent.js';
+import { handleTerminalConnection } from './terminal.js';
 import type { Task, AgentEvent, WsClientMessage } from './types.js';
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
@@ -33,7 +34,23 @@ app.get('/api/health', (_req, res) => {
 });
 
 const server = createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
+const wss = new WebSocketServer({ noServer: true });
+const termWss = new WebSocketServer({ noServer: true });
+
+server.on('upgrade', (request, socket, head) => {
+  const pathname = new URL(request.url || '', `http://${request.headers.host}`).pathname;
+  if (pathname === '/ws/terminal') {
+    termWss.handleUpgrade(request, socket, head, (ws) => {
+      termWss.emit('connection', ws, request);
+    });
+  } else if (pathname === '/ws') {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  } else {
+    socket.destroy();
+  }
+});
 
 const activeAbortControllers = new Map<string, AbortController>();
 
@@ -126,6 +143,15 @@ wss.on('connection', (ws: WebSocket) => {
   });
 
   ws.on('close', () => console.log('[WS] Client disconnected'));
+});
+
+termWss.on('connection', (ws: WebSocket, req) => {
+  const url = new URL(req.url || '', `http://${req.headers.host}`);
+  const taskId = url.searchParams.get('taskId') || 'default';
+  const task = store.get(taskId);
+  const workspace = task?.workspace || DEFAULT_WORKSPACE;
+  console.log(`[Terminal] Connected for task ${taskId}`);
+  handleTerminalConnection(ws, taskId, workspace);
 });
 
 function broadcast(wssInstance: WebSocketServer, exclude: WebSocket, payload: Record<string, unknown>) {

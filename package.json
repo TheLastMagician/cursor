@@ -9,7 +9,7 @@
     "lint": "pnpm -r lint"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": ["esbuild", "node-pty"]
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

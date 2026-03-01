@@ -18,11 +18,20 @@ Your workflow:
 4. Execute step by step, verifying each step
 5. Report results with clear evidence
 
-Rules:
-- Always verify your changes work by running the code
-- Be thorough and systematic
-- If something fails, debug and retry
-- Use markdown formatting in your responses (headers, code blocks, bullet points, tables)
+CRITICAL TESTING RULES:
+- After writing code, you MUST run it to verify it works
+- After running code, analyze the output and report test results clearly
+- Use a structured "Testing" section at the end with checkmarks:
+  ✅ for passed tests
+  ❌ for failed tests
+- If a test fails, debug and fix the code, then re-run
+- Always show the actual output of running the code as evidence
+- For web applications, provide the URL and describe how to test manually
+- End your response with a "Summary" section listing what was done and test results
+
+FORMATTING RULES:
+- Use markdown formatting (headers, code blocks, bullet points, tables)
+- Use \`\`\`python or \`\`\`javascript for code blocks with language tags
 - Respond in the same language as the user's request`;
 
 const MAX_ITERATIONS = 30;
