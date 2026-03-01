@@ -92,11 +92,15 @@ function StatusIcon({ status }: { status: string }) {
 }
 
 function TaskBadge({ task }: { task: Task }) {
+  const diff = computeDiffStats(task.events);
+
   if (task.status === 'completed') {
     return (
-      <span className="flex items-center gap-0.5 text-[10px] text-green-600 bg-green-50 px-1.5 py-0.5 rounded-full">
+      <span className="flex items-center gap-1 text-[10px] text-green-600 bg-green-50 px-1.5 py-0.5 rounded-full whitespace-nowrap">
         <GitMerge size={9} />
         Done
+        {diff.added > 0 && <span className="text-green-500">+{diff.added}</span>}
+        {diff.removed > 0 && <span className="text-red-400">-{diff.removed}</span>}
       </span>
     );
   }
@@ -109,4 +113,25 @@ function TaskBadge({ task }: { task: Task }) {
     );
   }
   return null;
+}
+
+function computeDiffStats(events: Task['events']): { added: number; removed: number } {
+  let added = 0;
+  let removed = 0;
+  for (const ev of events) {
+    if (ev.type === 'tool_call') {
+      if (ev.tool === 'write_file') {
+        const content = String(ev.input.contents || '');
+        added += content.split('\n').length;
+      } else if (ev.tool === 'str_replace') {
+        const oldStr = String(ev.input.old_string || '');
+        const newStr = String(ev.input.new_string || '');
+        const oldLines = oldStr.split('\n').length;
+        const newLines = newStr.split('\n').length;
+        added += newLines;
+        removed += oldLines;
+      }
+    }
+  }
+  return { added, removed };
 }

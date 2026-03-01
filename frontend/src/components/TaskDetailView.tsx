@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { ArrowUp, Image, AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Loader2, Clock, User, Brain } from 'lucide-react';
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { ArrowUp, Image, AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Loader2, Clock, User, Brain, MoreHorizontal, Maximize2, Settings, Lock, GitBranch as GitIcon, Monitor, TerminalSquare } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { AgentEvent, Task } from '../types';
@@ -14,14 +14,59 @@ interface Props {
   workedDuration: number | null;
   onFollowUp: (taskId: string, prompt: string) => void;
   onNewTask: (prompt: string) => void;
+  pendingFollowUps?: string[];
 }
 
 type TabId = 'setup' | 'secrets' | 'git' | 'desktop' | 'terminal';
 
-export default function TaskDetailView({ task, events, isRunning, workedDuration, onFollowUp, onNewTask }: Props) {
+const TAB_ICONS: Record<TabId, React.ReactNode> = {
+  setup: <Settings size={14} />,
+  secrets: <Lock size={14} />,
+  git: <GitIcon size={14} />,
+  desktop: <Monitor size={14} />,
+  terminal: <TerminalSquare size={14} />,
+};
+
+export default function TaskDetailView({ task, events, isRunning, workedDuration, onFollowUp, onNewTask, pendingFollowUps }: Props) {
   const [activeTab, setActiveTab] = useState<TabId>('setup');
   const [followUp, setFollowUp] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const [panelWidth, setPanelWidth] = useState(() => {
+    const saved = localStorage.getItem('agentcloud:panelWidth');
+    return saved ? parseInt(saved) : 340;
+  });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragRef = useRef({ startX: 0, startWidth: 0 });
+
+  const handleDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+    dragRef.current = { startX: e.clientX, startWidth: panelWidth };
+  }, [panelWidth]);
+
+  useEffect(() => {
+    if (!isDragging) return;
+    const handleMove = (e: MouseEvent) => {
+      const delta = dragRef.current.startX - e.clientX;
+      const w = Math.max(220, Math.min(700, dragRef.current.startWidth + delta));
+      setPanelWidth(w);
+    };
+    const handleUp = () => {
+      setIsDragging(false);
+      localStorage.setItem('agentcloud:panelWidth', String(panelWidth));
+    };
+    document.addEventListener('mousemove', handleMove);
+    document.addEventListener('mouseup', handleUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    return () => {
+      document.removeEventListener('mousemove', handleMove);
+      document.removeEventListener('mouseup', handleUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isDragging, panelWidth]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -33,9 +78,9 @@ export default function TaskDetailView({ task, events, isRunning, workedDuration
     e.preventDefault();
     const trimmed = followUp.trim();
     if (!trimmed) return;
-    if (task && task.status === 'completed') {
+    if (task) {
       onFollowUp(task.id, trimmed);
-    } else if (!task) {
+    } else {
       onNewTask(trimmed);
     }
     setFollowUp('');
@@ -49,6 +94,7 @@ export default function TaskDetailView({ task, events, isRunning, workedDuration
     { id: 'terminal', label: 'Terminal' },
   ];
 
+  const useIconTabs = panelWidth < 280;
   const merged = mergeEvents(events);
   const duration = workedDuration || task?.workedDuration;
 
@@ -66,14 +112,19 @@ export default function TaskDetailView({ task, events, isRunning, workedDuration
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
+              title={tab.label}
               className={`px-3 py-2.5 text-[13px] transition-colors relative ${
                 activeTab === tab.id ? 'text-gray-900 font-medium' : 'text-gray-400 hover:text-gray-600'
               }`}
             >
-              {tab.label}
+              {useIconTabs ? TAB_ICONS[tab.id] : tab.label}
               {activeTab === tab.id && <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-gray-900" />}
             </button>
           ))}
+          <div className="ml-1 border-l border-gray-200 pl-1 flex items-center gap-0.5">
+            <button className="p-1.5 text-gray-400 hover:text-gray-600 rounded-md hover:bg-gray-100" title="More options"><MoreHorizontal size={14} /></button>
+            <button className="p-1.5 text-gray-400 hover:text-gray-600 rounded-md hover:bg-gray-100" title="Expand"><Maximize2 size={14} /></button>
+          </div>
         </div>
       </div>
 
@@ -83,14 +134,12 @@ export default function TaskDetailView({ task, events, isRunning, workedDuration
         <div className="flex-1 flex flex-col min-w-0">
           <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-5">
             <div className="max-w-[720px] space-y-4">
-              {/* User prompt */}
               {task && (
                 <div className="bg-gray-50 rounded-xl px-4 py-3 text-[14px] text-gray-800 leading-relaxed border border-gray-100">
                   {task.prompt}
                 </div>
               )}
 
-              {/* Duration */}
               {!isRunning && duration && (
                 <p className="text-xs text-gray-400">
                   {task?.status === 'completed' ? 'Environment ready' : 'Task ended'}
@@ -98,13 +147,24 @@ export default function TaskDetailView({ task, events, isRunning, workedDuration
                 </p>
               )}
 
-              {/* Events */}
               {merged.map((item, i) => <EventItem key={i} item={item} />)}
 
               {isRunning && (
                 <div className="flex items-center gap-2 text-sm text-blue-500 py-1">
                   <Loader2 size={14} className="animate-spin" />
                   Agent is working...
+                </div>
+              )}
+
+              {pendingFollowUps && pendingFollowUps.length > 0 && (
+                <div className="space-y-2">
+                  {pendingFollowUps.map((msg, i) => (
+                    <div key={`pending-${i}`} className="bg-gray-50 rounded-xl px-4 py-3 text-[14px] text-gray-800 leading-relaxed border border-gray-100 opacity-60 flex items-start gap-2">
+                      <User size={14} className="text-gray-400 mt-1 flex-shrink-0" />
+                      <span>{msg}</span>
+                      <span className="ml-auto text-[10px] text-gray-400 whitespace-nowrap">queued</span>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
@@ -122,14 +182,13 @@ export default function TaskDetailView({ task, events, isRunning, workedDuration
               <input
                 value={followUp}
                 onChange={(e) => setFollowUp(e.target.value)}
-                placeholder={isRunning ? 'Agent is working...' : 'Add follow up for agent'}
+                placeholder={isRunning ? 'Add follow up for agent (queued)' : 'Add follow up for agent'}
                 className="flex-1 text-sm text-gray-900 placeholder-gray-400 bg-transparent focus:outline-none"
-                disabled={isRunning}
               />
               <button type="button" className="p-1 text-gray-400 hover:text-gray-600"><Image size={16} /></button>
               <button
                 type="submit"
-                disabled={!followUp.trim() || isRunning}
+                disabled={!followUp.trim()}
                 className="w-7 h-7 rounded-full bg-gray-900 hover:bg-gray-700 disabled:bg-gray-200 flex items-center justify-center transition-colors"
               >
                 <ArrowUp size={13} className="text-white" />
@@ -138,8 +197,14 @@ export default function TaskDetailView({ task, events, isRunning, workedDuration
           </div>
         </div>
 
+        {/* Draggable divider */}
+        <div
+          onMouseDown={handleDragStart}
+          className={`w-[3px] flex-shrink-0 cursor-col-resize transition-colors hidden lg:block ${isDragging ? 'bg-blue-400' : 'hover:bg-blue-300 bg-transparent'}`}
+        />
+
         {/* Right panel */}
-        <div className="w-[340px] border-l border-gray-200 bg-gray-50/50 overflow-y-auto hidden lg:block">
+        <div style={{ width: panelWidth }} className="border-l border-gray-200 bg-gray-50/50 overflow-y-auto hidden lg:block flex-shrink-0">
           <RightPanel tab={activeTab} task={task} isRunning={isRunning} events={events} />
         </div>
       </div>
