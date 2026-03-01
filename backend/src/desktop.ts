@@ -22,33 +22,48 @@ export async function startTaskDesktop(taskId: string): Promise<TaskDesktop | nu
   const vncPort = 5900 + displayNum;
 
   try {
-    const xvfb = spawn('Xvfb', [display, '-screen', '0', '1280x720x24', '-ac', '-nolisten', 'tcp'], {
+    const env = { ...process.env, DISPLAY: display };
+
+    // 1. Xvfb virtual framebuffer
+    spawn('Xvfb', [display, '-screen', '0', '1280x720x24', '-ac', '-nolisten', 'tcp'], {
       stdio: 'ignore', detached: true,
-    });
-    xvfb.unref();
+    }).unref();
     await sleep(600);
 
-    if (commandExists('fluxbox')) {
-      const wm = spawn('fluxbox', [], {
-        stdio: 'ignore', detached: true,
-        env: { ...process.env, DISPLAY: display },
-      });
-      wm.unref();
+    // 2. dbus session (required by xfce)
+    let dbusEnv = env;
+    if (commandExists('dbus-launch')) {
+      try {
+        const dbusOut = execSync('dbus-launch --sh-syntax', { env, timeout: 3000 }).toString();
+        for (const line of dbusOut.split('\n')) {
+          const m = line.match(/^(\w+)='?([^';\s]+)/);
+          if (m) dbusEnv = { ...dbusEnv, [m[1]]: m[2] };
+        }
+      } catch { /* continue without dbus */ }
     }
 
-    const vnc = spawn('x11vnc', [
+    // 3. XFCE4 desktop environment
+    if (commandExists('xfce4-session')) {
+      spawn('xfce4-session', [], { stdio: 'ignore', detached: true, env: dbusEnv }).unref();
+    } else if (commandExists('xfwm4')) {
+      spawn('xfwm4', [], { stdio: 'ignore', detached: true, env: dbusEnv }).unref();
+      if (commandExists('xfdesktop')) spawn('xfdesktop', [], { stdio: 'ignore', detached: true, env: dbusEnv }).unref();
+      if (commandExists('xfce4-panel')) spawn('xfce4-panel', [], { stdio: 'ignore', detached: true, env: dbusEnv }).unref();
+    } else if (commandExists('fluxbox')) {
+      spawn('fluxbox', [], { stdio: 'ignore', detached: true, env: dbusEnv }).unref();
+    }
+    await sleep(1500);
+
+    // 4. VNC server
+    spawn('x11vnc', [
       '-display', display, '-nopw', '-forever', '-shared',
       '-rfbport', String(vncPort), '-noxdamage', '-cursor', 'arrow',
-    ], {
-      stdio: 'ignore', detached: true,
-      env: { ...process.env, DISPLAY: display },
-    });
-    vnc.unref();
+    ], { stdio: 'ignore', detached: true, env: dbusEnv }).unref();
     await sleep(600);
 
     const desktop = { display, vncPort };
     taskDesktops.set(taskId, desktop);
-    console.log(`  [Desktop] Task ${taskId.slice(0, 8)} → display ${display}, VNC port ${vncPort}`);
+    console.log(`  [Desktop] Task ${taskId.slice(0, 8)} → display ${display}, VNC port ${vncPort} (xfce4)`);
     return desktop;
   } catch (err) {
     console.log('  [Desktop] Failed:', (err as Error).message);
