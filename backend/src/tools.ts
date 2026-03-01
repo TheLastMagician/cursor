@@ -20,6 +20,11 @@ function getSession(workspace: string): ShellSession {
   return session;
 }
 
+export function setWorkspaceEnv(workspace: string, key: string, value: string): void {
+  const session = getSession(workspace);
+  session.env[key] = value;
+}
+
 // ─── Tool Definitions ───────────────────────────────────────────────────────
 export const toolDefinitions: ToolDefinition[] = [
   {

@@ -3,7 +3,11 @@ import { Monitor } from 'lucide-react';
 
 type Status = 'connecting' | 'connected' | 'disconnected' | 'unavailable';
 
-export default function VncDesktop() {
+interface Props {
+  taskId?: string;
+}
+
+export default function VncDesktop({ taskId }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const rfbRef = useRef<InstanceType<typeof import('@novnc/novnc/lib/rfb.js').default> | null>(null);
   const [status, setStatus] = useState<Status>('connecting');
@@ -24,7 +28,8 @@ export default function VncDesktop() {
       const { default: RFB } = await import('@novnc/novnc/lib/rfb.js');
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const url = `${protocol}//${window.location.host}/ws/desktop`;
+      const tid = taskId || 'default';
+      const url = `${protocol}//${window.location.host}/ws/desktop?taskId=${tid}`;
 
       const rfb = new RFB(container, url, {
         scaleViewport: true,
@@ -41,7 +46,7 @@ export default function VncDesktop() {
     } catch {
       setStatus('unavailable');
     }
-  }, []);
+  }, [taskId]);
 
   useEffect(() => {
     connect();
@@ -51,7 +56,7 @@ export default function VncDesktop() {
         rfbRef.current = null;
       }
     };
-  }, [connect]);
+  }, [connect, taskId]);
 
   return (
     <div className="relative h-full">
@@ -68,9 +73,9 @@ export default function VncDesktop() {
               <div className="w-12 h-12 mx-auto mb-3 rounded-xl bg-gray-100 flex items-center justify-center">
                 <Monitor size={24} className="text-gray-400" />
               </div>
-              <p className="text-sm font-medium text-gray-700 mb-1">Desktop not available</p>
+              <p className="text-sm font-medium text-gray-700 mb-1">桌面未就绪</p>
               <p className="text-xs text-gray-400 mb-4 max-w-[220px]">
-                The virtual desktop environment is not running.
+                虚拟机尚未启动，请先提交任务，系统会自动初始化虚拟桌面环境。
               </p>
               <button
                 onClick={() => connect()}

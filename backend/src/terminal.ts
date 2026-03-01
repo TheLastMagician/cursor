@@ -1,4 +1,5 @@
 import { WebSocket } from 'ws';
+import { getTaskDisplay } from './desktop.js';
 
 let ptyModule: typeof import('node-pty') | null = null;
 try {
@@ -21,12 +22,13 @@ export function handleTerminalConnection(ws: WebSocket, taskId: string, workspac
     activePtys.delete(taskId);
   }
 
+  const taskDisplay = getTaskDisplay(taskId);
   const pty = ptyModule.spawn('bash', [], {
     name: 'xterm-256color',
     cols: 120,
     rows: 30,
     cwd: workspace,
-    env: { ...process.env, TERM: 'xterm-256color' } as Record<string, string>,
+    env: { ...process.env, TERM: 'xterm-256color', ...(taskDisplay ? { DISPLAY: taskDisplay } : {}) } as Record<string, string>,
   });
 
   activePtys.set(taskId, pty);

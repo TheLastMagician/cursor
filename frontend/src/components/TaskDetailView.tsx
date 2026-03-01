@@ -227,7 +227,7 @@ function RightPanel({ tab, task, isRunning, events }: { tab: TabId; task: Task |
     case 'secrets': return <SecretsPanel />;
     case 'git': return <GitPanel />;
     case 'files': return <FilesPanel workspace={task?.workspace} />;
-    case 'desktop': return <DesktopPanel />;
+    case 'desktop': return <DesktopPanel taskId={task?.id} />;
     case 'terminal': return <TerminalPanel taskId={task?.id || 'default'} />;
     default: return null;
   }
@@ -440,10 +440,10 @@ function FilesPanel({ workspace }: { workspace?: string }) {
   );
 }
 
-function DesktopPanel() {
+function DesktopPanel({ taskId }: { taskId?: string }) {
   return (
     <div className="h-full">
-      <VncDesktop />
+      <VncDesktop taskId={taskId} />
     </div>
   );
 }
