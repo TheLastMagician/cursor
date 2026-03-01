@@ -5,7 +5,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { v4 as uuid } from 'uuid';
 import { mkdirSync, existsSync } from 'fs';
 import { store } from './store.js';
-import { runAgent } from './agent.js';
+import { runAgent, getProviderInfo } from './agent.js';
 import type { Task, AgentEvent, WsClientMessage } from './types.js';
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
@@ -30,9 +30,11 @@ app.get('/api/tasks/:id', (req, res) => {
 });
 
 app.get('/api/health', (_req, res) => {
+  const info = getProviderInfo();
   res.json({
     status: 'ok',
-    mode: process.env.ANTHROPIC_API_KEY ? 'live' : 'mock',
+    provider: info.provider,
+    model: info.model,
     workspace: DEFAULT_WORKSPACE,
   });
 });
@@ -128,7 +130,10 @@ function broadcast(wssInstance: WebSocketServer, exclude: WebSocket, payload: Re
 }
 
 server.listen(PORT, '0.0.0.0', () => {
-  const mode = process.env.ANTHROPIC_API_KEY ? '🟢 Live (Claude API)' : '🟡 Mock (Demo mode)';
+  const info = getProviderInfo();
+  const mode = info.provider === 'mock'
+    ? '🟡 Mock (Demo mode)'
+    : `🟢 ${info.provider} (${info.model})`;
   console.log(`
 ╔══════════════════════════════════════════════╗
 ║         Agent Cloud Backend Server           ║

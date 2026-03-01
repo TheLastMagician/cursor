@@ -16,8 +16,10 @@ pnpm --filter frontend dev   # frontend only, port 5173, proxies /api and /ws to
 ```
 
 ### Key notes
-- Without `ANTHROPIC_API_KEY` env var, the agent runs in **mock mode** (simulated tool calls for demo)
-- With the key set, it uses Claude API for real autonomous agent execution
+- Without any LLM API key, the agent runs in **mock mode** (simulated tool calls for demo)
+- With `MINIMAX_API_KEY` set, uses MiniMax M1 via OpenAI-compatible API
+- With `ANTHROPIC_API_KEY` set, uses Claude API for real autonomous agent execution
+- Priority: MINIMAX_API_KEY > ANTHROPIC_API_KEY > mock mode
 - Lint/typecheck: `pnpm run lint` (runs `tsc --noEmit` in both packages)
 - The Vite proxy forwards `/api` and `/ws` from port 5173 → 3001; WebSocket target must use `http://` not `ws://` in Vite config
 - Agent workspace defaults to `/tmp/agent-workspace` (configurable via `AGENT_WORKSPACE` env var)
