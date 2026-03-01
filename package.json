@@ -1,0 +1,17 @@
+{
+  "name": "agent-cloud",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Cloud Agent System - Autonomous coding agent platform",
+  "scripts": {
+    "dev": "concurrently -n backend,frontend -c blue,green \"pnpm --filter backend dev\" \"pnpm --filter frontend dev\"",
+    "build": "pnpm --filter frontend build && pnpm --filter backend build",
+    "lint": "pnpm -r lint"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild", "node-pty"]
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
