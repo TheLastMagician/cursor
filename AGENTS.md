@@ -35,7 +35,7 @@ This project clones the Cursor Agent Cloud product. Key UI behaviors to match:
 
 **Draggable divider:** A vertical splitter between center and right panels. Dragging left/right resizes both panels in real time. When the right panel narrows, tab labels collapse to icons only.
 
-**Desktop tab:** Shows a **live remote desktop / VNC view** (rendered screenshots of the agent's visual environment — browser windows, UIs, etc.), NOT shell command output. The Terminal tab is the one for shell/CLI.
+**Desktop tab:** Shows a **live remote desktop / VNC view** via noVNC (`@novnc/novnc@1.5.0` — must stay on v1.5.x; v1.6+ has a top-level await incompatible with esbuild/Vite). Backend auto-starts Xvfb + x11vnc and proxies VNC via `/ws/desktop`. Requires `xvfb` and `x11vnc` system packages (`apt-get install -y xvfb x11vnc fluxbox`).
 
 **Terminal tab:** Interactive xterm.js shell connected to the agent workspace via WebSocket PTY.
 
