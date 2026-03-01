@@ -3,11 +3,14 @@ import cors from 'cors';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { v4 as uuid } from 'uuid';
-import { mkdirSync, existsSync } from 'fs';
+import { mkdirSync, existsSync, readdirSync, statSync, createReadStream } from 'fs';
+import { join, resolve, basename } from 'path';
 import { store } from './store.js';
 import { runAgent, getProviderInfo } from './agent.js';
 import { toolDefinitions } from './tools.js';
 import { handleTerminalConnection } from './terminal.js';
+import { handleDesktopConnection, startTaskDesktop, hasDesktopSupport } from './desktop.js';
+import { setWorkspaceEnv } from './tools.js';
 import type { Task, AgentEvent, WsClientMessage } from './types.js';
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
@@ -36,14 +39,51 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', provider: info.provider, model: info.model, workspace: DEFAULT_WORKSPACE });
 });
 
+app.get('/api/files', (req, res) => {
+  const workspace = (req.query.workspace as string) || DEFAULT_WORKSPACE;
+  const relPath = (req.query.path as string) || '/';
+  const fullPath = resolve(workspace, relPath.replace(/^\//, ''));
+  if (!fullPath.startsWith(resolve(workspace))) return res.status(403).json({ error: 'Path traversal' });
+  if (!existsSync(fullPath)) return res.status(404).json({ error: 'Not found' });
+  try {
+    const entries = readdirSync(fullPath).filter(n => !n.startsWith('.')).map(name => {
+      const fp = join(fullPath, name);
+      try {
+        const s = statSync(fp);
+        return { name, type: s.isDirectory() ? 'directory' as const : 'file' as const, size: s.size, modified: s.mtime.toISOString() };
+      } catch { return { name, type: 'file' as const, size: 0, modified: '' }; }
+    });
+    entries.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'directory' ? -1 : 1));
+    res.json({ path: relPath, entries });
+  } catch (err) { res.status(500).json({ error: String(err) }); }
+});
+
+app.get('/api/files/download', (req, res) => {
+  const workspace = (req.query.workspace as string) || DEFAULT_WORKSPACE;
+  const relPath = (req.query.path as string) || '';
+  const fullPath = resolve(workspace, relPath.replace(/^\//, ''));
+  if (!fullPath.startsWith(resolve(workspace))) return res.status(403).json({ error: 'Path traversal' });
+  if (!existsSync(fullPath)) return res.status(404).json({ error: 'Not found' });
+  try {
+    const s = statSync(fullPath);
+    if (s.isDirectory()) return res.status(400).json({ error: 'Cannot download directory' });
+    res.setHeader('Content-Disposition', `attachment; filename="${basename(fullPath)}"`);
+    res.setHeader('Content-Length', s.size);
+    createReadStream(fullPath).pipe(res);
+  } catch (err) { res.status(500).json({ error: String(err) }); }
+});
+
 const server = createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 const termWss = new WebSocketServer({ noServer: true });
+const desktopWss = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', (request, socket, head) => {
   const pathname = new URL(request.url || '', `http://${request.headers.host}`).pathname;
   if (pathname === '/ws/terminal') {
     termWss.handleUpgrade(request, socket, head, (ws) => termWss.emit('connection', ws, request));
+  } else if (pathname.startsWith('/ws/desktop')) {
+    desktopWss.handleUpgrade(request, socket, head, (ws) => desktopWss.emit('connection', ws, request));
   } else if (pathname === '/ws') {
     wss.handleUpgrade(request, socket, head, (ws) => wss.emit('connection', ws, request));
   } else {
@@ -131,6 +171,16 @@ async function executeAgent(
   };
 
   try {
+    // VM initialization
+    if (!existingMessages && hasDesktopSupport()) {
+      emit({ type: 'message', content: '🖥️ Initializing virtual machine...', timestamp: new Date().toISOString() });
+      const desktop = await startTaskDesktop(taskId, workspace);
+      if (desktop) {
+        setWorkspaceEnv(workspace, 'DISPLAY', desktop.display);
+        emit({ type: 'message', content: `✅ Virtual machine ready — desktop \`${desktop.display}\` on port \`${desktop.vncPort}\``, timestamp: new Date().toISOString() });
+      }
+    }
+
     const messages = await runAgent(prompt, workspace, emit, controller.signal, existingMessages);
     if (messages.length > 0) store.setConversation(taskId, messages);
     store.updateStatus(taskId, 'completed');
@@ -147,6 +197,13 @@ async function executeAgent(
     broadcast(wssInstance, ws, { type: 'task_list', data: { tasks: store.list() } });
   }
 }
+
+desktopWss.on('connection', (ws: WebSocket, req: import('http').IncomingMessage) => {
+  const url = new URL(req.url || '', `http://${req.headers.host}`);
+  const taskId = url.searchParams.get('taskId') || 'default';
+  console.log(`[Desktop] VNC client connected for task ${taskId.slice(0, 8)}`);
+  handleDesktopConnection(ws, taskId);
+});
 
 termWss.on('connection', (ws: WebSocket, req) => {
   const url = new URL(req.url || '', `http://${req.headers.host}`);
@@ -165,5 +222,6 @@ function broadcast(wssInstance: WebSocketServer, exclude: WebSocket, payload: Re
 server.listen(PORT, '0.0.0.0', () => {
   const info = getProviderInfo();
   const mode = info.provider === 'mock' ? '🟡 Mock' : `🟢 ${info.provider} (${info.model})`;
-  console.log(`\n  Agent Cloud Backend — ${mode}\n  http://localhost:${PORT}\n  Tools: ${toolDefinitions.map(t => t.name).join(', ')}\n`);
+  const desktop = hasDesktopSupport() ? '🟢 available (per-task)' : '🔴 not installed';
+  console.log(`\n  Agent Cloud Backend — ${mode}\n  http://localhost:${PORT}\n  Tools: ${toolDefinitions.map(t => t.name).join(', ')}\n  Desktop: ${desktop}\n`);
 });
