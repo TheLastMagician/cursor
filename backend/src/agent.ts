@@ -1,46 +1,98 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { execSync } from 'child_process';
 import { AgentEvent, ToolResult } from './types.js';
 import { toolDefinitions, executeTool } from './tools.js';
 
-const SYSTEM_PROMPT = `You are an autonomous coding agent running in a cloud sandbox environment. You help users with software engineering tasks by writing code, running commands, and managing files.
+// ─── System Prompt (hierarchical, matching design doc §3.3.2) ───────────────
 
-Your capabilities:
-- Execute shell commands (install packages, run scripts, git operations, etc.)
-- Read and write files in the workspace
-- Search code using ripgrep
-- List directory contents
+function buildSystemPrompt(workspace: string): string {
+  const sections: string[] = [];
 
-Your workflow:
-1. Understand the user's task
-2. Explore the workspace to understand the current state
-3. Plan your approach  
-4. Execute step by step, verifying each step
-5. Report results with clear evidence
+  // §1 Identity
+  sections.push(`<identity>
+You are an autonomous coding agent running in a cloud sandbox. You perform complex multi-step software engineering tasks: writing code, running commands, debugging, testing, and deploying.
+</identity>`);
 
+  // §2 Tools
+  sections.push(`<tools>
+You have access to these tools: ${toolDefinitions.map(t => t.name).join(', ')}.
+Key tool rules:
+- Shell is STATEFUL: cwd and env persist across calls. Use 'cd' to navigate.
+- Use str_replace for editing existing files (NOT write_file, which overwrites entirely).
+- Use glob to find files by pattern. Use search (ripgrep) to find content.
+- Use todo_write for complex multi-step tasks to track progress.
+- Always quote file paths with spaces.
+</tools>`);
+
+  // §3 Workflow
+  sections.push(`<workflow>
+1. EXPLORE: Understand the workspace (list_files, read_file, search)
+2. PLAN: Create a todo list for complex tasks (todo_write)
+3. IMPLEMENT: Write/edit code (write_file, str_replace)
+4. TEST: Always run code to verify (shell). Never skip this step.
+5. DEBUG: If tests fail, read error output, fix, and re-test.
+6. REPORT: Summarize what was done with evidence.
+</workflow>`);
+
+  // §4 Testing methodology (design doc §4.3)
+  sections.push(`<testing>
 CRITICAL TESTING RULES:
-- After writing code, you MUST run it to verify it works
-- After running code, analyze the output and report test results clearly
-- Use a structured "Testing" section at the end with checkmarks:
+- After writing code, you MUST run it to verify correctness.
+- After running, analyze output and report structured test results:
   ✅ for passed tests
   ❌ for failed tests
-- If a test fails, debug and fix the code, then re-run
-- Always show the actual output of running the code as evidence
-- For web applications, provide the URL and describe how to test manually
-- End your response with a "Summary" section listing what was done and test results
+- If a test fails, debug and fix the code, then re-run.
+- Show actual command output as evidence.
+- End with a Summary section listing changes and test results.
+- For web apps: start the server, test with curl, and report URLs.
+</testing>`);
 
-FORMATTING RULES:
-- Use markdown formatting (headers, code blocks, bullet points, tables)
-- Use \`\`\`python or \`\`\`javascript for code blocks with language tags
-- Respond in the same language as the user's request`;
+  // §5 Code editing rules
+  sections.push(`<editing>
+- Use str_replace for surgical edits (safer than rewriting entire files).
+- Read the file first before editing to understand context.
+- Preserve exact indentation and whitespace.
+- Do NOT add unnecessary comments explaining obvious changes.
+</editing>`);
 
-const MAX_ITERATIONS = 30;
+  // §6 Git integration
+  sections.push(`<git>
+- If the workspace is a git repo, commit your changes when the task is complete.
+- Use descriptive commit messages.
+- Run: git add -A && git commit -m "description of changes"
+</git>`);
+
+  // §7 Formatting
+  sections.push(`<formatting>
+- Use markdown in responses (headers, code blocks, bullet points, tables).
+- Use language-tagged code blocks (\`\`\`python, \`\`\`javascript, etc.).
+- Respond in the same language as the user's request.
+</formatting>`);
+
+  // §8 AGENTS.md (persistent knowledge, design doc §3.9)
+  const agentsMdPath = join(workspace, 'AGENTS.md');
+  if (existsSync(agentsMdPath)) {
+    try {
+      const agentsMd = readFileSync(agentsMdPath, 'utf-8').slice(0, 4000);
+      sections.push(`<agents_md>
+The following is the AGENTS.md file from the workspace. It contains important project-specific instructions. Follow these guidelines:
+${agentsMd}
+</agents_md>`);
+    } catch { /* ignore read errors */ }
+  }
+
+  return sections.join('\n\n');
+}
+
+// ─── Constants ──────────────────────────────────────────────────────────────
+
+const MAX_ITERATIONS = 50;
 
 type EmitFn = (event: AgentEvent) => void;
-
-function ts(): string {
-  return new Date().toISOString();
-}
+function ts(): string { return new Date().toISOString(); }
 
 type LLMProvider = 'minimax' | 'anthropic' | 'mock';
 
@@ -59,6 +111,29 @@ export function getProviderInfo(): { provider: LLMProvider; model: string } {
   }
 }
 
+// ─── Git Integration ────────────────────────────────────────────────────────
+
+function tryGitCommit(workspace: string, summary: string): string | null {
+  try {
+    const isGit = existsSync(join(workspace, '.git'));
+    if (!isGit) return null;
+
+    const status = execSync('git status --porcelain', { cwd: workspace, encoding: 'utf-8' }).trim();
+    if (!status) return null;
+
+    const changedFiles = status.split('\n').length;
+    const msg = summary.slice(0, 72) || 'Agent task completed';
+    execSync(`git add -A && git commit -m "${msg.replace(/"/g, '\\"')}"`, {
+      cwd: workspace, encoding: 'utf-8', timeout: 15000,
+    });
+    return `Committed ${changedFiles} file(s): ${msg}`;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Main Entry ─────────────────────────────────────────────────────────────
+
 export async function runAgent(
   prompt: string,
   workspace: string,
@@ -68,25 +143,39 @@ export async function runAgent(
 ): Promise<OpenAI.ChatCompletionMessageParam[]> {
   const provider = detectProvider();
 
+  let messages: OpenAI.ChatCompletionMessageParam[];
   switch (provider) {
     case 'minimax':
-      return await runOpenAICompatibleAgent(prompt, workspace, emit, signal, existingMessages);
+      messages = await runOpenAICompatibleAgent(prompt, workspace, emit, signal, existingMessages);
+      break;
     case 'anthropic':
       await runAnthropicAgent(prompt, workspace, emit, signal);
-      return [];
+      messages = [];
+      break;
     default:
       await runMockAgent(prompt, workspace, emit);
-      return [];
+      messages = [];
+      break;
   }
+
+  // Git auto-commit
+  const lastMessage = messages.length > 0 ?
+    messages.filter(m => m.role === 'assistant').pop() : null;
+  const summary = lastMessage && typeof lastMessage.content === 'string'
+    ? lastMessage.content.slice(0, 100) : 'Agent completed task';
+  const commitResult = tryGitCommit(workspace, summary);
+  if (commitResult) {
+    emit({ type: 'message', content: `📦 ${commitResult}`, timestamp: ts() });
+  }
+
+  return messages;
 }
+
+// ─── OpenAI-Compatible Agent (MiniMax) ──────────────────────────────────────
 
 const openaiTools: OpenAI.ChatCompletionTool[] = toolDefinitions.map((t) => ({
   type: 'function' as const,
-  function: {
-    name: t.name,
-    description: t.description,
-    parameters: t.input_schema,
-  },
+  function: { name: t.name, description: t.description, parameters: t.input_schema },
 }));
 
 async function runOpenAICompatibleAgent(
@@ -101,55 +190,44 @@ async function runOpenAICompatibleAgent(
     baseURL: 'https://api.minimaxi.com/v1',
   });
 
+  const systemPrompt = buildSystemPrompt(workspace);
+
   const messages: OpenAI.ChatCompletionMessageParam[] = existingMessages
     ? [...existingMessages, { role: 'user' as const, content: prompt }]
     : [
-        { role: 'system' as const, content: SYSTEM_PROMPT },
+        { role: 'system' as const, content: systemPrompt },
         { role: 'user' as const, content: prompt },
       ];
 
-  const startTime = Date.now();
-
   for (let i = 0; i < MAX_ITERATIONS; i++) {
-    if (signal?.aborted) {
-      emit({ type: 'error', content: 'Task cancelled', timestamp: ts() });
-      return messages;
-    }
+    if (signal?.aborted) { emit({ type: 'error', content: 'Task cancelled', timestamp: ts() }); return messages; }
 
     const thinkStart = Date.now();
-    emit({ type: 'thinking', content: `Thinking...`, timestamp: ts() });
+    emit({ type: 'thinking', content: 'Thinking...', timestamp: ts() });
 
     let response: OpenAI.ChatCompletion;
     try {
       response = await client.chat.completions.create({
         model: 'MiniMax-M2.5',
-        max_tokens: 8192,
+        max_tokens: 16384,
         messages,
         tools: openaiTools,
         tool_choice: 'auto',
       });
     } catch (err) {
-      const thinkDuration = Math.round((Date.now() - thinkStart) / 1000);
-      emit({ type: 'thinking_done', duration: thinkDuration, timestamp: ts() });
+      emit({ type: 'thinking_done', duration: Math.round((Date.now() - thinkStart) / 1000), timestamp: ts() });
       emit({ type: 'error', content: `LLM API error: ${err instanceof Error ? err.message : String(err)}`, timestamp: ts() });
       return messages;
     }
-
-    const thinkDuration = Math.round((Date.now() - thinkStart) / 1000);
-    emit({ type: 'thinking_done', duration: thinkDuration, timestamp: ts() });
+    emit({ type: 'thinking_done', duration: Math.round((Date.now() - thinkStart) / 1000), timestamp: ts() });
 
     const choice = response.choices[0];
-    if (!choice) {
-      emit({ type: 'error', content: 'No response from LLM', timestamp: ts() });
-      return messages;
-    }
+    if (!choice) { emit({ type: 'error', content: 'No response from LLM', timestamp: ts() }); return messages; }
 
     const assistantMessage = choice.message;
-
     if (assistantMessage.content) {
       emit({ type: 'message', content: assistantMessage.content, timestamp: ts() });
     }
-
     messages.push(assistantMessage);
 
     if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
@@ -157,62 +235,34 @@ async function runOpenAICompatibleAgent(
         if (toolCall.type !== 'function') continue;
         const fn = toolCall.function;
         let parsedInput: Record<string, unknown>;
-        try {
-          parsedInput = JSON.parse(fn.arguments);
-        } catch {
-          parsedInput = { raw: fn.arguments };
-        }
+        try { parsedInput = JSON.parse(fn.arguments); }
+        catch { parsedInput = { raw: fn.arguments }; }
 
-        emit({
-          type: 'tool_call',
-          id: toolCall.id,
-          tool: fn.name,
-          input: parsedInput,
-          timestamp: ts(),
-        });
+        emit({ type: 'tool_call', id: toolCall.id, tool: fn.name, input: parsedInput, timestamp: ts() });
 
         let result: ToolResult;
-        try {
-          result = executeTool(fn.name, parsedInput, workspace);
-        } catch (err) {
-          result = { output: `Execution error: ${err instanceof Error ? err.message : String(err)}`, success: false };
-        }
+        try { result = executeTool(fn.name, parsedInput, workspace); }
+        catch (err) { result = { output: `Error: ${err instanceof Error ? err.message : String(err)}`, success: false }; }
 
-        emit({
-          type: 'tool_result',
-          id: toolCall.id,
-          output: result.output,
-          success: result.success,
-          timestamp: ts(),
-        });
-
-        messages.push({
-          role: 'tool',
-          tool_call_id: toolCall.id,
-          content: result.output,
-        });
+        emit({ type: 'tool_result', id: toolCall.id, output: result.output, success: result.success, timestamp: ts() });
+        messages.push({ role: 'tool', tool_call_id: toolCall.id, content: result.output });
       }
     }
 
-    if (choice.finish_reason === 'stop' || !assistantMessage.tool_calls || assistantMessage.tool_calls.length === 0) {
-      break;
-    }
+    if (choice.finish_reason === 'stop' || !assistantMessage.tool_calls || assistantMessage.tool_calls.length === 0) break;
   }
 
   return messages;
 }
 
-async function runAnthropicAgent(
-  prompt: string,
-  workspace: string,
-  emit: EmitFn,
-  signal?: AbortSignal,
-): Promise<void> {
+// ─── Anthropic Agent ────────────────────────────────────────────────────────
+
+async function runAnthropicAgent(prompt: string, workspace: string, emit: EmitFn, signal?: AbortSignal): Promise<void> {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const systemPrompt = buildSystemPrompt(workspace);
   const messages: Anthropic.MessageParam[] = [{ role: 'user', content: prompt }];
   const tools: Anthropic.Tool[] = toolDefinitions.map((t) => ({
-    name: t.name,
-    description: t.description,
+    name: t.name, description: t.description,
     input_schema: t.input_schema as Anthropic.Tool['input_schema'],
   }));
 
@@ -223,7 +273,7 @@ async function runAnthropicAgent(
 
     let response: Anthropic.Message;
     try {
-      response = await client.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 8192, system: SYSTEM_PROMPT, tools, messages });
+      response = await client.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 16384, system: systemPrompt, tools, messages });
     } catch (err) {
       emit({ type: 'thinking_done', duration: Math.round((Date.now() - thinkStart) / 1000), timestamp: ts() });
       emit({ type: 'error', content: `LLM API error: ${err instanceof Error ? err.message : String(err)}`, timestamp: ts() }); return;
@@ -233,9 +283,8 @@ async function runAnthropicAgent(
     let hasToolUse = false;
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
     for (const block of response.content) {
-      if (block.type === 'text' && block.text.trim()) {
-        emit({ type: 'message', content: block.text, timestamp: ts() });
-      } else if (block.type === 'tool_use') {
+      if (block.type === 'text' && block.text.trim()) emit({ type: 'message', content: block.text, timestamp: ts() });
+      else if (block.type === 'tool_use') {
         hasToolUse = true;
         const toolInput = block.input as Record<string, unknown>;
         emit({ type: 'tool_call', id: block.id, tool: block.name, input: toolInput, timestamp: ts() });
@@ -252,44 +301,20 @@ async function runAnthropicAgent(
   }
 }
 
-async function runMockAgent(prompt: string, workspace: string, emit: EmitFn): Promise<void> {
-  const start = Date.now();
-  emit({ type: 'thinking', content: 'Thinking...', timestamp: ts() });
-  await sleep(800);
-  emit({ type: 'thinking_done', duration: 1, timestamp: ts() });
+// ─── Mock Agent ─────────────────────────────────────────────────────────────
 
-  emit({ type: 'message', content: `I'll help you with: "${prompt}". Let me explore the workspace first.`, timestamp: ts() });
-  await sleep(400);
+async function runMockAgent(prompt: string, workspace: string, emit: EmitFn): Promise<void> {
+  emit({ type: 'thinking', content: 'Thinking...', timestamp: ts() });
+  await sleep(600);
+  emit({ type: 'thinking_done', duration: 1, timestamp: ts() });
+  emit({ type: 'message', content: `I'll help you with: "${prompt}". Let me explore the workspace.`, timestamp: ts() });
 
   const listResult = executeTool('list_files', { depth: 2 }, workspace);
   emit({ type: 'tool_call', id: 'mock-1', tool: 'list_files', input: { depth: 2 }, timestamp: ts() });
-  await sleep(300);
+  await sleep(200);
   emit({ type: 'tool_result', id: 'mock-1', output: listResult.output, success: listResult.success, timestamp: ts() });
-  await sleep(400);
 
-  const lowerPrompt = prompt.toLowerCase();
-  if (lowerPrompt.includes('hello') || lowerPrompt.includes('create') || lowerPrompt.includes('write') || lowerPrompt.includes('文件') || lowerPrompt.includes('创建')) {
-    emit({ type: 'message', content: 'I\'ll create a Python script for you.', timestamp: ts() });
-    await sleep(300);
-    const fileName = 'hello.py';
-    const fileContent = '#!/usr/bin/env python3\n"""Hello World - Created by Agent Cloud"""\n\ndef main():\n    print("Hello, World!")\n    print("Created by Agent Cloud")\n\nif __name__ == "__main__":\n    main()\n';
-    const writeResult = executeTool('write_file', { path: fileName, content: fileContent }, workspace);
-    emit({ type: 'tool_call', id: 'mock-2', tool: 'write_file', input: { path: fileName, content: fileContent }, timestamp: ts() });
-    await sleep(200);
-    emit({ type: 'tool_result', id: 'mock-2', output: writeResult.output, success: writeResult.success, timestamp: ts() });
-    await sleep(300);
-    const runResult = executeTool('shell', { command: `python3 ${fileName}` }, workspace);
-    emit({ type: 'tool_call', id: 'mock-3', tool: 'shell', input: { command: `python3 ${fileName}` }, timestamp: ts() });
-    await sleep(200);
-    emit({ type: 'tool_result', id: 'mock-3', output: runResult.output, success: runResult.success, timestamp: ts() });
-    await sleep(300);
-    const dur = Math.round((Date.now() - start) / 1000);
-    emit({ type: 'message', content: `## Summary\n\n- Created \`${fileName}\` with a hello world script\n- Verified it runs correctly\n\n**Testing**\n- ✅ \`python3 hello.py\` — output matches expected\n\nWorked for ${dur}s`, timestamp: ts() });
-  } else {
-    emit({ type: 'message', content: `Workspace explored. Set \`MINIMAX_API_KEY\` or \`ANTHROPIC_API_KEY\` for full agent capabilities.`, timestamp: ts() });
-  }
+  emit({ type: 'message', content: `Set \`MINIMAX_API_KEY\` or \`ANTHROPIC_API_KEY\` for full autonomous agent capabilities.\n\n**Mock mode** can only demonstrate tool calling.`, timestamp: ts() });
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+function sleep(ms: number): Promise<void> { return new Promise(r => setTimeout(r, ms)); }

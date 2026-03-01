@@ -22,7 +22,7 @@ export type AgentEvent =
   | { type: 'user_message'; content: string; timestamp: string };
 
 export interface WsClientMessage {
-  type: 'create_task' | 'follow_up';
+  type: 'create_task' | 'follow_up' | 'cancel_task';
   data: { prompt: string; workspace?: string; taskId?: string };
 }
 
