@@ -19,9 +19,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.get('/api/tasks', (_req, res) => {
-  res.json(store.list());
-});
+app.get('/api/tasks', (_req, res) => res.json(store.list()));
 
 app.get('/api/tasks/:id', (req, res) => {
   const task = store.get(req.params.id);
@@ -31,12 +29,7 @@ app.get('/api/tasks/:id', (req, res) => {
 
 app.get('/api/health', (_req, res) => {
   const info = getProviderInfo();
-  res.json({
-    status: 'ok',
-    provider: info.provider,
-    model: info.model,
-    workspace: DEFAULT_WORKSPACE,
-  });
+  res.json({ status: 'ok', provider: info.provider, model: info.model, workspace: DEFAULT_WORKSPACE });
 });
 
 const server = createServer(app);
@@ -46,48 +39,28 @@ const activeAbortControllers = new Map<string, AbortController>();
 
 wss.on('connection', (ws: WebSocket) => {
   console.log('[WS] Client connected');
-
-  ws.send(JSON.stringify({
-    type: 'task_list',
-    data: { tasks: store.list() },
-  }));
+  ws.send(JSON.stringify({ type: 'task_list', data: { tasks: store.list() } }));
 
   ws.on('message', async (raw: Buffer) => {
     let msg: WsClientMessage;
-    try {
-      msg = JSON.parse(raw.toString());
-    } catch {
-      ws.send(JSON.stringify({ type: 'task_error', data: { error: 'Invalid message format' } }));
-      return;
-    }
+    try { msg = JSON.parse(raw.toString()); }
+    catch { ws.send(JSON.stringify({ type: 'task_error', data: { error: 'Invalid message format' } })); return; }
+
+    const send = (payload: Record<string, unknown>) => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
+    };
 
     if (msg.type === 'create_task') {
       const taskId = uuid();
       const workspace = msg.data.workspace || DEFAULT_WORKSPACE;
-
-      if (!existsSync(workspace)) {
-        mkdirSync(workspace, { recursive: true });
-      }
+      if (!existsSync(workspace)) mkdirSync(workspace, { recursive: true });
 
       const task: Task = {
-        id: taskId,
-        prompt: msg.data.prompt,
-        workspace,
-        status: 'running',
-        createdAt: new Date().toISOString(),
-        events: [],
+        id: taskId, prompt: msg.data.prompt, workspace, status: 'running',
+        createdAt: new Date().toISOString(), events: [],
       };
-
       store.create(task);
-
-      const send = (payload: Record<string, unknown>) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify(payload));
-        }
-      };
-
-      send({ type: 'task_created', data: { taskId, status: 'running' } });
-
+      send({ type: 'task_created', data: { taskId, status: 'running', prompt: msg.data.prompt } });
       broadcast(wss, ws, { type: 'task_list', data: { tasks: store.list() } });
 
       const controller = new AbortController();
@@ -99,10 +72,12 @@ wss.on('connection', (ws: WebSocket) => {
       };
 
       try {
-        await runAgent(msg.data.prompt, workspace, emit, controller.signal);
+        const messages = await runAgent(msg.data.prompt, workspace, emit, controller.signal);
+        if (messages.length > 0) store.setConversation(taskId, messages);
         store.updateStatus(taskId, 'completed');
+        const t = store.get(taskId);
         emit({ type: 'status', status: 'completed', timestamp: new Date().toISOString() });
-        send({ type: 'task_completed', data: { taskId } });
+        send({ type: 'task_completed', data: { taskId, workedDuration: t?.workedDuration } });
       } catch (err) {
         store.updateStatus(taskId, 'failed');
         const errorMsg = err instanceof Error ? err.message : String(err);
@@ -113,35 +88,53 @@ wss.on('connection', (ws: WebSocket) => {
         broadcast(wss, ws, { type: 'task_list', data: { tasks: store.list() } });
       }
     }
+
+    if (msg.type === 'follow_up' && msg.data.taskId) {
+      const taskId = msg.data.taskId;
+      const task = store.get(taskId);
+      if (!task) { send({ type: 'task_error', data: { taskId, error: 'Task not found' } }); return; }
+
+      task.status = 'running';
+      const existingMessages = store.getConversation(taskId);
+
+      const emit = (event: AgentEvent) => {
+        store.addEvent(taskId, event);
+        send({ type: 'agent_event', data: { taskId, event } });
+      };
+
+      emit({ type: 'user_message', content: msg.data.prompt, timestamp: new Date().toISOString() });
+
+      const controller = new AbortController();
+      activeAbortControllers.set(taskId, controller);
+
+      try {
+        const messages = await runAgent(msg.data.prompt, task.workspace, emit, controller.signal, existingMessages);
+        if (messages.length > 0) store.setConversation(taskId, messages);
+        store.updateStatus(taskId, 'completed');
+        const t = store.get(taskId);
+        emit({ type: 'status', status: 'completed', timestamp: new Date().toISOString() });
+        send({ type: 'task_completed', data: { taskId, workedDuration: t?.workedDuration } });
+      } catch (err) {
+        store.updateStatus(taskId, 'failed');
+        emit({ type: 'error', content: err instanceof Error ? err.message : String(err), timestamp: new Date().toISOString() });
+        send({ type: 'task_error', data: { taskId, error: err instanceof Error ? err.message : String(err) } });
+      } finally {
+        activeAbortControllers.delete(taskId);
+        broadcast(wss, ws, { type: 'task_list', data: { tasks: store.list() } });
+      }
+    }
   });
 
-  ws.on('close', () => {
-    console.log('[WS] Client disconnected');
-  });
+  ws.on('close', () => console.log('[WS] Client disconnected'));
 });
 
 function broadcast(wssInstance: WebSocketServer, exclude: WebSocket, payload: Record<string, unknown>) {
   const msg = JSON.stringify(payload);
-  wssInstance.clients.forEach((client) => {
-    if (client !== exclude && client.readyState === WebSocket.OPEN) {
-      client.send(msg);
-    }
-  });
+  wssInstance.clients.forEach((c) => { if (c !== exclude && c.readyState === WebSocket.OPEN) c.send(msg); });
 }
 
 server.listen(PORT, '0.0.0.0', () => {
   const info = getProviderInfo();
-  const mode = info.provider === 'mock'
-    ? '🟡 Mock (Demo mode)'
-    : `🟢 ${info.provider} (${info.model})`;
-  console.log(`
-╔══════════════════════════════════════════════╗
-║         Agent Cloud Backend Server           ║
-╠══════════════════════════════════════════════╣
-║  HTTP API:  http://localhost:${PORT}            ║
-║  WebSocket: ws://localhost:${PORT}/ws           ║
-║  Mode:      ${mode.padEnd(32)}║
-║  Workspace: ${DEFAULT_WORKSPACE.padEnd(32)}║
-╚══════════════════════════════════════════════╝
-  `);
+  const mode = info.provider === 'mock' ? '🟡 Mock' : `🟢 ${info.provider} (${info.model})`;
+  console.log(`\n  Agent Cloud Backend — ${mode}\n  http://localhost:${PORT}\n`);
 });

@@ -14,7 +14,7 @@ Your capabilities:
 Your workflow:
 1. Understand the user's task
 2. Explore the workspace to understand the current state
-3. Plan your approach
+3. Plan your approach  
 4. Execute step by step, verifying each step
 5. Report results with clear evidence
 
@@ -22,7 +22,7 @@ Rules:
 - Always verify your changes work by running the code
 - Be thorough and systematic
 - If something fails, debug and retry
-- Provide clear explanations of what you did and why
+- Use markdown formatting in your responses (headers, code blocks, bullet points, tables)
 - Respond in the same language as the user's request`;
 
 const MAX_ITERATIONS = 30;
@@ -55,19 +55,19 @@ export async function runAgent(
   workspace: string,
   emit: EmitFn,
   signal?: AbortSignal,
-): Promise<void> {
+  existingMessages?: OpenAI.ChatCompletionMessageParam[],
+): Promise<OpenAI.ChatCompletionMessageParam[]> {
   const provider = detectProvider();
 
   switch (provider) {
     case 'minimax':
-      await runOpenAICompatibleAgent(prompt, workspace, emit, signal);
-      break;
+      return await runOpenAICompatibleAgent(prompt, workspace, emit, signal, existingMessages);
     case 'anthropic':
       await runAnthropicAgent(prompt, workspace, emit, signal);
-      break;
+      return [];
     default:
       await runMockAgent(prompt, workspace, emit);
-      break;
+      return [];
   }
 }
 
@@ -85,24 +85,30 @@ async function runOpenAICompatibleAgent(
   workspace: string,
   emit: EmitFn,
   signal?: AbortSignal,
-): Promise<void> {
+  existingMessages?: OpenAI.ChatCompletionMessageParam[],
+): Promise<OpenAI.ChatCompletionMessageParam[]> {
   const client = new OpenAI({
     apiKey: process.env.MINIMAX_API_KEY,
     baseURL: 'https://api.minimax.chat/v1',
   });
 
-  const messages: OpenAI.ChatCompletionMessageParam[] = [
-    { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: prompt },
-  ];
+  const messages: OpenAI.ChatCompletionMessageParam[] = existingMessages
+    ? [...existingMessages, { role: 'user' as const, content: prompt }]
+    : [
+        { role: 'system' as const, content: SYSTEM_PROMPT },
+        { role: 'user' as const, content: prompt },
+      ];
+
+  const startTime = Date.now();
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     if (signal?.aborted) {
       emit({ type: 'error', content: 'Task cancelled', timestamp: ts() });
-      return;
+      return messages;
     }
 
-    emit({ type: 'thinking', content: `Thinking... (step ${i + 1})`, timestamp: ts() });
+    const thinkStart = Date.now();
+    emit({ type: 'thinking', content: `Thinking...`, timestamp: ts() });
 
     let response: OpenAI.ChatCompletion;
     try {
@@ -114,14 +120,19 @@ async function runOpenAICompatibleAgent(
         tool_choice: 'auto',
       });
     } catch (err) {
+      const thinkDuration = Math.round((Date.now() - thinkStart) / 1000);
+      emit({ type: 'thinking_done', duration: thinkDuration, timestamp: ts() });
       emit({ type: 'error', content: `LLM API error: ${err instanceof Error ? err.message : String(err)}`, timestamp: ts() });
-      return;
+      return messages;
     }
+
+    const thinkDuration = Math.round((Date.now() - thinkStart) / 1000);
+    emit({ type: 'thinking_done', duration: thinkDuration, timestamp: ts() });
 
     const choice = response.choices[0];
     if (!choice) {
       emit({ type: 'error', content: 'No response from LLM', timestamp: ts() });
-      return;
+      return messages;
     }
 
     const assistantMessage = choice.message;
@@ -178,6 +189,8 @@ async function runOpenAICompatibleAgent(
       break;
     }
   }
+
+  return messages;
 }
 
 async function runAnthropicAgent(
@@ -187,11 +200,7 @@ async function runAnthropicAgent(
   signal?: AbortSignal,
 ): Promise<void> {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-  const messages: Anthropic.MessageParam[] = [
-    { role: 'user', content: prompt },
-  ];
-
+  const messages: Anthropic.MessageParam[] = [{ role: 'user', content: prompt }];
   const tools: Anthropic.Tool[] = toolDefinitions.map((t) => ({
     name: t.name,
     description: t.description,
@@ -199,30 +208,21 @@ async function runAnthropicAgent(
   }));
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
-    if (signal?.aborted) {
-      emit({ type: 'error', content: 'Task cancelled', timestamp: ts() });
-      return;
-    }
-
-    emit({ type: 'thinking', content: `Thinking... (step ${i + 1})`, timestamp: ts() });
+    if (signal?.aborted) { emit({ type: 'error', content: 'Task cancelled', timestamp: ts() }); return; }
+    const thinkStart = Date.now();
+    emit({ type: 'thinking', content: 'Thinking...', timestamp: ts() });
 
     let response: Anthropic.Message;
     try {
-      response = await client.messages.create({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 8192,
-        system: SYSTEM_PROMPT,
-        tools,
-        messages,
-      });
+      response = await client.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 8192, system: SYSTEM_PROMPT, tools, messages });
     } catch (err) {
-      emit({ type: 'error', content: `LLM API error: ${err instanceof Error ? err.message : String(err)}`, timestamp: ts() });
-      return;
+      emit({ type: 'thinking_done', duration: Math.round((Date.now() - thinkStart) / 1000), timestamp: ts() });
+      emit({ type: 'error', content: `LLM API error: ${err instanceof Error ? err.message : String(err)}`, timestamp: ts() }); return;
     }
+    emit({ type: 'thinking_done', duration: Math.round((Date.now() - thinkStart) / 1000), timestamp: ts() });
 
     let hasToolUse = false;
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
-
     for (const block of response.content) {
       if (block.type === 'text' && block.text.trim()) {
         emit({ type: 'message', content: block.text, timestamp: ts() });
@@ -230,69 +230,54 @@ async function runAnthropicAgent(
         hasToolUse = true;
         const toolInput = block.input as Record<string, unknown>;
         emit({ type: 'tool_call', id: block.id, tool: block.name, input: toolInput, timestamp: ts() });
-
         let result: ToolResult;
-        try {
-          result = executeTool(block.name, toolInput, workspace);
-        } catch (err) {
-          result = { output: `Execution error: ${err instanceof Error ? err.message : String(err)}`, success: false };
-        }
-
+        try { result = executeTool(block.name, toolInput, workspace); }
+        catch (err) { result = { output: `Error: ${err instanceof Error ? err.message : String(err)}`, success: false }; }
         emit({ type: 'tool_result', id: block.id, output: result.output, success: result.success, timestamp: ts() });
-
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: block.id,
-          content: result.output,
-          is_error: !result.success,
-        });
+        toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: result.output, is_error: !result.success });
       }
     }
-
     messages.push({ role: 'assistant', content: response.content });
-    if (toolResults.length > 0) {
-      messages.push({ role: 'user', content: toolResults });
-    }
-
+    if (toolResults.length > 0) messages.push({ role: 'user', content: toolResults });
     if (response.stop_reason === 'end_turn' || !hasToolUse) break;
   }
 }
 
 async function runMockAgent(prompt: string, workspace: string, emit: EmitFn): Promise<void> {
-  emit({ type: 'thinking', content: 'Analyzing task... (Mock Mode — set MINIMAX_API_KEY or ANTHROPIC_API_KEY for real agent)', timestamp: ts() });
+  const start = Date.now();
+  emit({ type: 'thinking', content: 'Thinking...', timestamp: ts() });
   await sleep(800);
+  emit({ type: 'thinking_done', duration: 1, timestamp: ts() });
 
-  emit({ type: 'message', content: `I understand your request: "${prompt}". Let me explore the workspace first.`, timestamp: ts() });
-  await sleep(500);
+  emit({ type: 'message', content: `I'll help you with: "${prompt}". Let me explore the workspace first.`, timestamp: ts() });
+  await sleep(400);
 
   const listResult = executeTool('list_files', { depth: 2 }, workspace);
   emit({ type: 'tool_call', id: 'mock-1', tool: 'list_files', input: { depth: 2 }, timestamp: ts() });
   await sleep(300);
   emit({ type: 'tool_result', id: 'mock-1', output: listResult.output, success: listResult.success, timestamp: ts() });
-  await sleep(500);
+  await sleep(400);
 
   const lowerPrompt = prompt.toLowerCase();
   if (lowerPrompt.includes('hello') || lowerPrompt.includes('create') || lowerPrompt.includes('write') || lowerPrompt.includes('文件') || lowerPrompt.includes('创建')) {
-    emit({ type: 'message', content: 'I\'ll create the requested file for you.', timestamp: ts() });
-    await sleep(400);
-
+    emit({ type: 'message', content: 'I\'ll create a Python script for you.', timestamp: ts() });
+    await sleep(300);
     const fileName = 'hello.py';
     const fileContent = '#!/usr/bin/env python3\n"""Hello World - Created by Agent Cloud"""\n\ndef main():\n    print("Hello, World!")\n    print("Created by Agent Cloud")\n\nif __name__ == "__main__":\n    main()\n';
     const writeResult = executeTool('write_file', { path: fileName, content: fileContent }, workspace);
     emit({ type: 'tool_call', id: 'mock-2', tool: 'write_file', input: { path: fileName, content: fileContent }, timestamp: ts() });
-    await sleep(300);
+    await sleep(200);
     emit({ type: 'tool_result', id: 'mock-2', output: writeResult.output, success: writeResult.success, timestamp: ts() });
-    await sleep(500);
-
+    await sleep(300);
     const runResult = executeTool('shell', { command: `python3 ${fileName}` }, workspace);
     emit({ type: 'tool_call', id: 'mock-3', tool: 'shell', input: { command: `python3 ${fileName}` }, timestamp: ts() });
-    await sleep(300);
+    await sleep(200);
     emit({ type: 'tool_result', id: 'mock-3', output: runResult.output, success: runResult.success, timestamp: ts() });
-    await sleep(400);
-
-    emit({ type: 'message', content: `Done! Created \`${fileName}\` and verified it runs correctly.`, timestamp: ts() });
+    await sleep(300);
+    const dur = Math.round((Date.now() - start) / 1000);
+    emit({ type: 'message', content: `## Summary\n\n- Created \`${fileName}\` with a hello world script\n- Verified it runs correctly\n\n**Testing**\n- ✅ \`python3 hello.py\` — output matches expected\n\nWorked for ${dur}s`, timestamp: ts() });
   } else {
-    emit({ type: 'message', content: `Workspace explored. Set MINIMAX_API_KEY or ANTHROPIC_API_KEY for full agent capabilities.`, timestamp: ts() });
+    emit({ type: 'message', content: `Workspace explored. Set \`MINIMAX_API_KEY\` or \`ANTHROPIC_API_KEY\` for full agent capabilities.`, timestamp: ts() });
   }
 }
 
