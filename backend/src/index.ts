@@ -8,6 +8,7 @@ import { store } from './store.js';
 import { runAgent, getProviderInfo } from './agent.js';
 import { toolDefinitions } from './tools.js';
 import { handleTerminalConnection } from './terminal.js';
+import { handleDesktopConnection, startDesktop, isDesktopAvailable } from './desktop.js';
 import type { Task, AgentEvent, WsClientMessage } from './types.js';
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
@@ -39,11 +40,14 @@ app.get('/api/health', (_req, res) => {
 const server = createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 const termWss = new WebSocketServer({ noServer: true });
+const desktopWss = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', (request, socket, head) => {
   const pathname = new URL(request.url || '', `http://${request.headers.host}`).pathname;
   if (pathname === '/ws/terminal') {
     termWss.handleUpgrade(request, socket, head, (ws) => termWss.emit('connection', ws, request));
+  } else if (pathname === '/ws/desktop') {
+    desktopWss.handleUpgrade(request, socket, head, (ws) => desktopWss.emit('connection', ws));
   } else if (pathname === '/ws') {
     wss.handleUpgrade(request, socket, head, (ws) => wss.emit('connection', ws, request));
   } else {
@@ -148,6 +152,11 @@ async function executeAgent(
   }
 }
 
+desktopWss.on('connection', (ws: WebSocket) => {
+  console.log('[Desktop] VNC client connected');
+  handleDesktopConnection(ws);
+});
+
 termWss.on('connection', (ws: WebSocket, req) => {
   const url = new URL(req.url || '', `http://${req.headers.host}`);
   const taskId = url.searchParams.get('taskId') || 'default';
@@ -162,8 +171,10 @@ function broadcast(wssInstance: WebSocketServer, exclude: WebSocket, payload: Re
   wssInstance.clients.forEach((c) => { if (c !== exclude && c.readyState === WebSocket.OPEN) c.send(msg); });
 }
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, '0.0.0.0', async () => {
   const info = getProviderInfo();
   const mode = info.provider === 'mock' ? '🟡 Mock' : `🟢 ${info.provider} (${info.model})`;
-  console.log(`\n  Agent Cloud Backend — ${mode}\n  http://localhost:${PORT}\n  Tools: ${toolDefinitions.map(t => t.name).join(', ')}\n`);
+  console.log(`\n  Agent Cloud Backend — ${mode}\n  http://localhost:${PORT}\n  Tools: ${toolDefinitions.map(t => t.name).join(', ')}`);
+  await startDesktop();
+  console.log();
 });

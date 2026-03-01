@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm';
 import type { AgentEvent, Task } from '../types';
 import ToolCallCard from './ToolCallCard';
 import XTerminal from './XTerminal';
+import VncDesktop from './VncDesktop';
 
 interface Props {
   task: Task | null;
@@ -151,7 +152,7 @@ function RightPanel({ tab, task, isRunning, events }: { tab: TabId; task: Task |
     case 'setup': return <SetupPanel task={task} isRunning={isRunning} events={events} />;
     case 'secrets': return <SecretsPanel />;
     case 'git': return <GitPanel />;
-    case 'desktop': return <DesktopPanel events={events} />;
+    case 'desktop': return <DesktopPanel />;
     case 'terminal': return <TerminalPanel taskId={task?.id || 'default'} />;
     default: return null;
   }
@@ -272,44 +273,10 @@ function GitPanel() {
   );
 }
 
-function DesktopPanel({ events }: { events: AgentEvent[] }) {
-  const shellResults = events.filter(e =>
-    e.type === 'tool_result' && (e as Extract<AgentEvent, {type:'tool_result'}>).success
-  ) as Extract<AgentEvent, {type:'tool_result'}>[];
-  
-  const shellCommands = events.filter(e =>
-    e.type === 'tool_call' && (e as Extract<AgentEvent, {type:'tool_call'}>).tool === 'shell'
-  ) as Extract<AgentEvent, {type:'tool_call'}>[];
-
+function DesktopPanel() {
   return (
-    <div className="p-4 space-y-3 h-full overflow-y-auto">
-      {shellCommands.length === 0 ? (
-        <div className="bg-gray-100 rounded-xl border border-gray-200 aspect-video flex items-center justify-center">
-          <p className="text-xs text-gray-400">Shell output will appear here during agent execution.</p>
-        </div>
-      ) : (
-        shellCommands.map((cmd, i) => {
-          const result = shellResults.find(r => r.id === cmd.id);
-          return (
-            <div key={i} className="bg-gray-900 rounded-lg overflow-hidden border border-gray-700">
-              <div className="px-3 py-1.5 bg-gray-800 border-b border-gray-700 flex items-center gap-2">
-                <div className="flex gap-1">
-                  <span className="w-2.5 h-2.5 rounded-full bg-red-500" />
-                  <span className="w-2.5 h-2.5 rounded-full bg-yellow-500" />
-                  <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
-                </div>
-                <span className="text-[10px] text-gray-400 font-mono">Terminal</span>
-              </div>
-              <div className="p-3 font-mono text-xs">
-                <div className="text-green-400">$ {String(cmd.input.command)}</div>
-                {result && (
-                  <pre className="text-gray-300 mt-1 whitespace-pre-wrap max-h-60 overflow-y-auto">{result.output}</pre>
-                )}
-              </div>
-            </div>
-          );
-        })
-      )}
+    <div className="h-full">
+      <VncDesktop />
     </div>
   );
 }
